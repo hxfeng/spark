@@ -31,7 +31,7 @@ The base class of local vectors is
 implementations: [`DenseVector`](api/scala/index.html#org.apache.spark.mllib.linalg.DenseVector) and
 [`SparseVector`](api/scala/index.html#org.apache.spark.mllib.linalg.SparseVector).  We recommend
 using the factory methods implemented in
-[`Vectors`](api/scala/index.html#org.apache.spark.mllib.linalg.Vector) to create local vectors.
+[`Vectors`](api/scala/index.html#org.apache.spark.mllib.linalg.Vectors$) to create local vectors.
 
 {% highlight scala %}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
@@ -57,7 +57,7 @@ The base class of local vectors is
 implementations: [`DenseVector`](api/java/org/apache/spark/mllib/linalg/DenseVector.html) and
 [`SparseVector`](api/java/org/apache/spark/mllib/linalg/SparseVector.html).  We recommend
 using the factory methods implemented in
-[`Vectors`](api/java/org/apache/spark/mllib/linalg/Vector.html) to create local vectors.
+[`Vectors`](api/java/org/apache/spark/mllib/linalg/Vectors.html) to create local vectors.
 
 {% highlight java %}
 import org.apache.spark.mllib.linalg.Vector;
@@ -78,13 +78,13 @@ MLlib recognizes the following types as dense vectors:
 
 and the following as sparse vectors:
 
-* MLlib's [`SparseVector`](api/python/pyspark.mllib.linalg.SparseVector-class.html).
+* MLlib's [`SparseVector`](api/python/pyspark.mllib.html#pyspark.mllib.linalg.SparseVector).
 * SciPy's
   [`csc_matrix`](http://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csc_matrix.html#scipy.sparse.csc_matrix)
   with a single column
 
 We recommend using NumPy arrays over lists for efficiency, and using the factory methods implemented
-in [`Vectors`](api/python/pyspark.mllib.linalg.Vectors-class.html) to create sparse vectors.
+in [`Vectors`](api/python/pyspark.mllib.html#pyspark.mllib.linalg.Vectors) to create sparse vectors.
 
 {% highlight python %}
 import numpy as np
@@ -151,7 +151,7 @@ LabeledPoint neg = new LabeledPoint(1.0, Vectors.sparse(3, new int[] {0, 2}, new
 <div data-lang="python" markdown="1">
 
 A labeled point is represented by
-[`LabeledPoint`](api/python/pyspark.mllib.regression.LabeledPoint-class.html).
+[`LabeledPoint`](api/python/pyspark.mllib.html#pyspark.mllib.regression.LabeledPoint).
 
 {% highlight python %}
 from pyspark.mllib.linalg import SparseVector
@@ -211,7 +211,7 @@ JavaRDD<LabeledPoint> examples =
 </div>
 
 <div data-lang="python" markdown="1">
-[`MLUtils.loadLibSVMFile`](api/python/pyspark.mllib.util.MLUtils-class.html) reads training
+[`MLUtils.loadLibSVMFile`](api/python/pyspark.mllib.html#pyspark.mllib.util.MLUtils) reads training
 examples stored in LIBSVM format.
 
 {% highlight python %}
@@ -241,7 +241,7 @@ The base class of local matrices is
 [`Matrix`](api/scala/index.html#org.apache.spark.mllib.linalg.Matrix), and we provide one
 implementation: [`DenseMatrix`](api/scala/index.html#org.apache.spark.mllib.linalg.DenseMatrix).
 We recommend using the factory methods implemented
-in [`Matrices`](api/scala/index.html#org.apache.spark.mllib.linalg.Matrices) to create local
+in [`Matrices`](api/scala/index.html#org.apache.spark.mllib.linalg.Matrices$) to create local
 matrices.
 
 {% highlight scala %}

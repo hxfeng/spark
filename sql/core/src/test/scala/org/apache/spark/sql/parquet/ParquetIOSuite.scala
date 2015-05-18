@@ -28,17 +28,18 @@ import parquet.example.data.simple.SimpleGroup
 import parquet.example.data.{Group, GroupWriter}
 import parquet.hadoop.api.WriteSupport
 import parquet.hadoop.api.WriteSupport.WriteContext
-import parquet.hadoop.metadata.CompressionCodecName
-import parquet.hadoop.{ParquetFileWriter, ParquetWriter}
+import parquet.hadoop.metadata.{ParquetMetadata, FileMetaData, CompressionCodecName}
+import parquet.hadoop.{Footer, ParquetFileWriter, ParquetWriter}
 import parquet.io.api.RecordConsumer
 import parquet.schema.{MessageType, MessageTypeParser}
 
 import org.apache.spark.sql.catalyst.ScalaReflection
 import org.apache.spark.sql.catalyst.expressions.Row
+import org.apache.spark.sql.catalyst.util.DateUtils
 import org.apache.spark.sql.test.TestSQLContext
 import org.apache.spark.sql.test.TestSQLContext._
 import org.apache.spark.sql.test.TestSQLContext.implicits._
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, QueryTest, SQLConf, SaveMode}
 
 // Write support class for nested groups: ParquetWriter initializes GroupWriteSupport
@@ -113,25 +114,40 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
     for ((precision, scale) <- Seq((5, 2), (1, 0), (1, 1), (18, 10), (18, 17))) {
       withTempPath { dir =>
         val data = makeDecimalRDD(DecimalType(precision, scale))
-        data.saveAsParquetFile(dir.getCanonicalPath)
-        checkAnswer(parquetFile(dir.getCanonicalPath), data.collect().toSeq)
+        data.write.parquet(dir.getCanonicalPath)
+        checkAnswer(read.parquet(dir.getCanonicalPath), data.collect().toSeq)
       }
     }
 
     // Decimals with precision above 18 are not yet supported
-    intercept[RuntimeException] {
+    intercept[Throwable] {
       withTempPath { dir =>
-        makeDecimalRDD(DecimalType(19, 10)).saveAsParquetFile(dir.getCanonicalPath)
-        parquetFile(dir.getCanonicalPath).collect()
+        makeDecimalRDD(DecimalType(19, 10)).write.parquet(dir.getCanonicalPath)
+        read.parquet(dir.getCanonicalPath).collect()
       }
     }
 
     // Unlimited-length decimals are not yet supported
-    intercept[RuntimeException] {
+    intercept[Throwable] {
       withTempPath { dir =>
-        makeDecimalRDD(DecimalType.Unlimited).saveAsParquetFile(dir.getCanonicalPath)
-        parquetFile(dir.getCanonicalPath).collect()
+        makeDecimalRDD(DecimalType.Unlimited).write.parquet(dir.getCanonicalPath)
+        read.parquet(dir.getCanonicalPath).collect()
       }
+    }
+  }
+
+  test("date type") {
+    def makeDateRDD(): DataFrame =
+      sparkContext
+        .parallelize(0 to 1000)
+        .map(i => Tuple1(DateUtils.toJavaDate(i)))
+        .toDF()
+        .select($"_1")
+
+    withTempPath { dir =>
+      val data = makeDateRDD()
+      data.write.parquet(dir.getCanonicalPath)
+      checkAnswer(read.parquet(dir.getCanonicalPath), data.collect().toSeq)
     }
   }
 
@@ -203,7 +219,7 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
   }
 
   test("compression codec") {
-    def compressionCodecFor(path: String) = {
+    def compressionCodecFor(path: String): String = {
       val codecs = ParquetTypesConverter
         .readMetaData(new Path(path), Some(configuration))
         .getBlocks
@@ -267,7 +283,7 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "part-r-0.parquet")
       makeRawParquetFile(path)
-      checkAnswer(parquetFile(path.toString), (0 until 10).map { i =>
+      checkAnswer(read.parquet(path.toString), (0 until 10).map { i =>
         Row(i % 2 == 0, i, i.toLong, i.toFloat, i.toDouble)
       })
     }
@@ -295,8 +311,8 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
   test("save - overwrite") {
     withParquetFile((1 to 10).map(i => (i, i.toString))) { file =>
       val newData = (11 to 20).map(i => (i, i.toString))
-      newData.toDF().save("org.apache.spark.sql.parquet", SaveMode.Overwrite, Map("path" -> file))
-      checkAnswer(parquetFile(file), newData.map(Row.fromTuple))
+      newData.toDF().write.format("parquet").mode(SaveMode.Overwrite).save(file)
+      checkAnswer(read.parquet(file), newData.map(Row.fromTuple))
     }
   }
 
@@ -304,8 +320,8 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
     val data = (1 to 10).map(i => (i, i.toString))
     withParquetFile(data) { file =>
       val newData = (11 to 20).map(i => (i, i.toString))
-      newData.toDF().save("org.apache.spark.sql.parquet", SaveMode.Ignore, Map("path" -> file))
-      checkAnswer(parquetFile(file), data.map(Row.fromTuple))
+      newData.toDF().write.format("parquet").mode(SaveMode.Ignore).save(file)
+      checkAnswer(read.parquet(file), data.map(Row.fromTuple))
     }
   }
 
@@ -314,8 +330,7 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
     withParquetFile(data) { file =>
       val newData = (11 to 20).map(i => (i, i.toString))
       val errorMessage = intercept[Throwable] {
-        newData.toDF().save(
-          "org.apache.spark.sql.parquet", SaveMode.ErrorIfExists, Map("path" -> file))
+        newData.toDF().write.format("parquet").mode(SaveMode.ErrorIfExists).save(file)
       }.getMessage
       assert(errorMessage.contains("already exists"))
     }
@@ -325,8 +340,67 @@ class ParquetIOSuiteBase extends QueryTest with ParquetTest {
     val data = (1 to 10).map(i => (i, i.toString))
     withParquetFile(data) { file =>
       val newData = (11 to 20).map(i => (i, i.toString))
-      newData.toDF().save("org.apache.spark.sql.parquet", SaveMode.Append, Map("path" -> file))
-      checkAnswer(parquetFile(file), (data ++ newData).map(Row.fromTuple))
+      newData.toDF().write.format("parquet").mode(SaveMode.Append).save(file)
+      checkAnswer(read.parquet(file), (data ++ newData).map(Row.fromTuple))
+    }
+  }
+
+  test("SPARK-6315 regression test") {
+    // Spark 1.1 and prior versions write Spark schema as case class string into Parquet metadata.
+    // This has been deprecated by JSON format since 1.2.  Notice that, 1.3 further refactored data
+    // types API, and made StructType.fields an array.  This makes the result of StructType.toString
+    // different from prior versions: there's no "Seq" wrapping the fields part in the string now.
+    val sparkSchema =
+      "StructType(Seq(StructField(a,BooleanType,false),StructField(b,IntegerType,false)))"
+
+    // The Parquet schema is intentionally made different from the Spark schema.  Because the new
+    // Parquet data source simply falls back to the Parquet schema once it fails to parse the Spark
+    // schema.  By making these two different, we are able to assert the old style case class string
+    // is parsed successfully.
+    val parquetSchema = MessageTypeParser.parseMessageType(
+      """message root {
+        |  required int32 c;
+        |}
+      """.stripMargin)
+
+    withTempPath { location =>
+      val extraMetadata = Map(RowReadSupport.SPARK_METADATA_KEY -> sparkSchema.toString)
+      val fileMetadata = new FileMetaData(parquetSchema, extraMetadata, "Spark")
+      val path = new Path(location.getCanonicalPath)
+
+      ParquetFileWriter.writeMetadataFile(
+        sparkContext.hadoopConfiguration,
+        path,
+        new Footer(path, new ParquetMetadata(fileMetadata, Nil)) :: Nil)
+
+      assertResult(read.parquet(path.toString).schema) {
+        StructType(
+          StructField("a", BooleanType, nullable = false) ::
+          StructField("b", IntegerType, nullable = false) ::
+          Nil)
+      }
+    }
+  }
+
+  test("SPARK-6352 DirectParquetOutputCommitter") {
+    // Write to a parquet file and let it fail.
+    // _temporary should be missing if direct output committer works.
+    try {
+      configuration.set("spark.sql.parquet.output.committer.class",
+        "org.apache.spark.sql.parquet.DirectParquetOutputCommitter")
+      sqlContext.udf.register("div0", (x: Int) => x / 0)
+      withTempPath { dir =>
+        intercept[org.apache.spark.SparkException] {
+          sqlContext.sql("select div0(1)").write.parquet(dir.getCanonicalPath)
+        }
+        val path = new Path(dir.getCanonicalPath, "_temporary")
+        val fs = path.getFileSystem(configuration)
+        assert(!fs.exists(path))
+      }
+    }
+    finally {
+      configuration.set("spark.sql.parquet.output.committer.class",
+        "parquet.hadoop.ParquetOutputCommitter")
     }
   }
 }
@@ -340,6 +414,18 @@ class ParquetDataSourceOnIOSuite extends ParquetIOSuiteBase with BeforeAndAfterA
 
   override protected def afterAll(): Unit = {
     sqlContext.setConf(SQLConf.PARQUET_USE_DATA_SOURCE_API, originalConf.toString)
+  }
+
+  test("SPARK-6330 regression test") {
+    // In 1.3.0, save to fs other than file: without configuring core-site.xml would get:
+    // IllegalArgumentException: Wrong FS: hdfs://..., expected: file:///
+    intercept[Throwable] {
+      sqlContext.read.parquet("file:///nonexistent")
+    }
+    val errorMessage = intercept[Throwable] {
+      sqlContext.read.parquet("hdfs://nonexistent")
+    }.toString
+    assert(errorMessage.contains("UnknownHostException"))
   }
 }
 

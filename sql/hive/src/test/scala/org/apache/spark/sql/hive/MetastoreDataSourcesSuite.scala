@@ -19,22 +19,20 @@ package org.apache.spark.sql.hive
 
 import java.io.File
 
-import org.scalatest.BeforeAndAfterEach
+import scala.collection.mutable.ArrayBuffer
 
-import org.apache.commons.io.FileUtils
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapred.InvalidInputException
+import org.scalatest.BeforeAndAfterEach
 
-import org.apache.spark.sql.catalyst.util
 import org.apache.spark.sql._
-import org.apache.spark.util.Utils
-import org.apache.spark.sql.types._
+import org.apache.spark.sql.hive.client.{HiveTable, ManagedTable}
 import org.apache.spark.sql.hive.test.TestHive._
 import org.apache.spark.sql.hive.test.TestHive.implicits._
 import org.apache.spark.sql.parquet.ParquetRelation2
 import org.apache.spark.sql.sources.LogicalRelation
-
-import scala.collection.mutable.ArrayBuffer
+import org.apache.spark.sql.types._
+import org.apache.spark.util.Utils
 
 /**
  * Tests for persisting tables created though the data sources API into the metastore.
@@ -43,11 +41,12 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
 
   override def afterEach(): Unit = {
     reset()
-    if (tempPath.exists()) Utils.deleteRecursively(tempPath)
+    Utils.deleteRecursively(tempPath)
   }
 
   val filePath = Utils.getSparkClassLoader.getResource("sample.json").getFile
-  var tempPath: File = util.getTempFilePath("jsonCTAS").getCanonicalFile
+  var tempPath: File = Utils.createTempDir()
+  tempPath.delete()
 
   test ("persistent JSON table") {
     sql(
@@ -61,7 +60,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
 
     checkAnswer(
       sql("SELECT * FROM jsonTable"),
-      jsonFile(filePath).collect().toSeq)
+      read.json(filePath).collect().toSeq)
   }
 
   test ("persistent JSON table with a user specified schema") {
@@ -78,7 +77,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
         |)
       """.stripMargin)
 
-    jsonFile(filePath).registerTempTable("expectedJsonTable")
+    read.json(filePath).registerTempTable("expectedJsonTable")
 
     checkAnswer(
       sql("SELECT a, b, `c_!@(3)`, `<d>`.`d!`, `<d>`.`=` FROM jsonTable"),
@@ -105,7 +104,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
 
     assert(expectedSchema === table("jsonTable").schema)
 
-    jsonFile(filePath).registerTempTable("expectedJsonTable")
+    read.json(filePath).registerTempTable("expectedJsonTable")
 
     checkAnswer(
       sql("SELECT b, `<d>`.`=` FROM jsonTable"),
@@ -124,7 +123,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
 
     checkAnswer(
       sql("SELECT * FROM jsonTable"),
-      jsonFile(filePath).collect().toSeq)
+      read.json(filePath).collect().toSeq)
   }
 
   test("drop table") {
@@ -139,7 +138,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
 
     checkAnswer(
       sql("SELECT * FROM jsonTable"),
-      jsonFile(filePath).collect().toSeq)
+      read.json(filePath).collect().toSeq)
 
     sql("DROP TABLE jsonTable")
 
@@ -154,7 +153,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
   }
 
   test("check change without refresh") {
-    val tempDir = File.createTempFile("sparksql", "json")
+    val tempDir = File.createTempFile("sparksql", "json", Utils.createTempDir())
     tempDir.delete()
     sparkContext.parallelize(("a", "b") :: Nil).toDF()
       .toJSON.saveAsTextFile(tempDir.getCanonicalPath)
@@ -172,7 +171,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
       sql("SELECT * FROM jsonTable"),
       Row("a", "b"))
 
-    FileUtils.deleteDirectory(tempDir)
+    Utils.deleteRecursively(tempDir)
     sparkContext.parallelize(("a1", "b1", "c1") :: Nil).toDF()
       .toJSON.saveAsTextFile(tempDir.getCanonicalPath)
 
@@ -188,11 +187,11 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     checkAnswer(
       sql("SELECT * FROM jsonTable"),
       Row("a1", "b1", "c1"))
-    FileUtils.deleteDirectory(tempDir)
+    Utils.deleteRecursively(tempDir)
   }
 
   test("drop, change, recreate") {
-    val tempDir = File.createTempFile("sparksql", "json")
+    val tempDir = File.createTempFile("sparksql", "json", Utils.createTempDir())
     tempDir.delete()
     sparkContext.parallelize(("a", "b") :: Nil).toDF()
       .toJSON.saveAsTextFile(tempDir.getCanonicalPath)
@@ -210,7 +209,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
       sql("SELECT * FROM jsonTable"),
       Row("a", "b"))
 
-    FileUtils.deleteDirectory(tempDir)
+    Utils.deleteRecursively(tempDir)
     sparkContext.parallelize(("a", "b", "c") :: Nil).toDF()
       .toJSON.saveAsTextFile(tempDir.getCanonicalPath)
 
@@ -229,7 +228,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     checkAnswer(
       sql("SELECT * FROM jsonTable"),
       Row("a", "b", "c"))
-    FileUtils.deleteDirectory(tempDir)
+    Utils.deleteRecursively(tempDir)
   }
 
   test("invalidate cache and reload") {
@@ -242,7 +241,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
         |)
       """.stripMargin)
 
-    jsonFile(filePath).registerTempTable("expectedJsonTable")
+    read.json(filePath).registerTempTable("expectedJsonTable")
 
     checkAnswer(
       sql("SELECT * FROM jsonTable"),
@@ -410,11 +409,11 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     val originalDefaultSource = conf.defaultDataSourceName
 
     val rdd = sparkContext.parallelize((1 to 10).map(i => s"""{"a":$i, "b":"str${i}"}"""))
-    val df = jsonRDD(rdd)
+    val df = read.json(rdd)
 
     conf.setConf(SQLConf.DEFAULT_DATA_SOURCE_NAME, "org.apache.spark.sql.json")
     // Save the df as a managed table (by not specifiying the path).
-    df.saveAsTable("savedJsonTable")
+    df.write.saveAsTable("savedJsonTable")
 
     checkAnswer(
       sql("SELECT * FROM savedJsonTable where savedJsonTable.a < 5"),
@@ -444,11 +443,11 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     val originalDefaultSource = conf.defaultDataSourceName
 
     val rdd = sparkContext.parallelize((1 to 10).map(i => s"""{"a":$i, "b":"str${i}"}"""))
-    val df = jsonRDD(rdd)
+    val df = read.json(rdd)
 
     conf.setConf(SQLConf.DEFAULT_DATA_SOURCE_NAME, "org.apache.spark.sql.json")
     // Save the df as a managed table (by not specifiying the path).
-    df.saveAsTable("savedJsonTable")
+    df.write.saveAsTable("savedJsonTable")
 
     checkAnswer(
       sql("SELECT * FROM savedJsonTable"),
@@ -456,17 +455,17 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
 
     // Right now, we cannot append to an existing JSON table.
     intercept[RuntimeException] {
-      df.saveAsTable("savedJsonTable", SaveMode.Append)
+      df.write.mode(SaveMode.Append).saveAsTable("savedJsonTable")
     }
 
     // We can overwrite it.
-    df.saveAsTable("savedJsonTable", SaveMode.Overwrite)
+    df.write.mode(SaveMode.Overwrite).saveAsTable("savedJsonTable")
     checkAnswer(
       sql("SELECT * FROM savedJsonTable"),
       df.collect())
 
     // When the save mode is Ignore, we will do nothing when the table already exists.
-    df.select("b").saveAsTable("savedJsonTable", SaveMode.Ignore)
+    df.select("b").write.mode(SaveMode.Ignore).saveAsTable("savedJsonTable")
     assert(df.schema === table("savedJsonTable").schema)
     checkAnswer(
       sql("SELECT * FROM savedJsonTable"),
@@ -475,16 +474,16 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     // Drop table will also delete the data.
     sql("DROP TABLE savedJsonTable")
     intercept[InvalidInputException] {
-      jsonFile(catalog.hiveDefaultTableFilePath("savedJsonTable"))
+      read.json(catalog.hiveDefaultTableFilePath("savedJsonTable"))
     }
 
     // Create an external table by specifying the path.
     conf.setConf(SQLConf.DEFAULT_DATA_SOURCE_NAME, "not a source name")
-    df.saveAsTable(
-      "savedJsonTable",
-      "org.apache.spark.sql.json",
-      SaveMode.Append,
-      Map("path" -> tempPath.toString))
+    df.write
+      .format("org.apache.spark.sql.json")
+      .mode(SaveMode.Append)
+      .option("path", tempPath.toString)
+      .saveAsTable("savedJsonTable")
     checkAnswer(
       sql("SELECT * FROM savedJsonTable"),
       df.collect())
@@ -492,7 +491,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     // Data should not be deleted after we drop the table.
     sql("DROP TABLE savedJsonTable")
     checkAnswer(
-      jsonFile(tempPath.toString),
+      read.json(tempPath.toString),
       df.collect())
 
     conf.setConf(SQLConf.DEFAULT_DATA_SOURCE_NAME, originalDefaultSource)
@@ -502,14 +501,13 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     val originalDefaultSource = conf.defaultDataSourceName
 
     val rdd = sparkContext.parallelize((1 to 10).map(i => s"""{"a":$i, "b":"str${i}"}"""))
-    val df = jsonRDD(rdd)
+    val df = read.json(rdd)
 
     conf.setConf(SQLConf.DEFAULT_DATA_SOURCE_NAME, "not a source name")
-    df.saveAsTable(
-      "savedJsonTable",
-      "org.apache.spark.sql.json",
-      SaveMode.Append,
-      Map("path" -> tempPath.toString))
+    df.write.format("org.apache.spark.sql.json")
+      .mode(SaveMode.Append)
+      .option("path", tempPath.toString)
+      .saveAsTable("savedJsonTable")
 
     conf.setConf(SQLConf.DEFAULT_DATA_SOURCE_NAME, "org.apache.spark.sql.json")
     createExternalTable("createdJsonTable", tempPath.toString)
@@ -527,7 +525,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     // Data should not be deleted.
     sql("DROP TABLE createdJsonTable")
     checkAnswer(
-      jsonFile(tempPath.toString),
+      read.json(tempPath.toString),
       df.collect())
 
     // Try to specify the schema.
@@ -567,7 +565,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
       setConf(SQLConf.PARQUET_USE_DATA_SOURCE_API, "true")
 
       val rdd = sparkContext.parallelize((1 to 10).map(i => s"""{"a":$i, "b":"str${i}"}"""))
-      jsonRDD(rdd).registerTempTable("jt")
+      read.json(rdd).registerTempTable("jt")
       sql(
         """
           |create table test_parquet_ctas STORED AS parquET
@@ -579,7 +577,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
         Row(3) :: Row(4) :: Nil
       )
 
-      table("test_parquet_ctas").queryExecution.analyzed match {
+      table("test_parquet_ctas").queryExecution.optimizedPlan match {
         case LogicalRelation(p: ParquetRelation2) => // OK
         case _ =>
           fail(
@@ -602,7 +600,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
       StructType(
         StructField("a", ArrayType(IntegerType, containsNull = true), nullable = true) :: Nil)
     assert(df1.schema === expectedSchema1)
-    df1.saveAsTable("arrayInParquet", "parquet", SaveMode.Overwrite)
+    df1.write.mode(SaveMode.Overwrite).format("parquet").saveAsTable("arrayInParquet")
 
     val df2 =
       createDataFrame(Tuple1(Seq(2, 3)) :: Nil).toDF("a")
@@ -611,10 +609,10 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
         StructField("a", ArrayType(IntegerType, containsNull = false), nullable = true) :: Nil)
     assert(df2.schema === expectedSchema2)
     df2.insertInto("arrayInParquet", overwrite = false)
-    createDataFrame(Tuple1(Seq(4, 5)) :: Nil).toDF("a")
-      .saveAsTable("arrayInParquet", SaveMode.Append) // This one internally calls df2.insertInto.
-    createDataFrame(Tuple1(Seq(Int.box(6), null.asInstanceOf[Integer])) :: Nil).toDF("a")
-      .saveAsTable("arrayInParquet", "parquet", SaveMode.Append)
+    createDataFrame(Tuple1(Seq(4, 5)) :: Nil).toDF("a").write.mode(SaveMode.Append)
+      .saveAsTable("arrayInParquet") // This one internally calls df2.insertInto.
+    createDataFrame(Tuple1(Seq(Int.box(6), null.asInstanceOf[Integer])) :: Nil).toDF("a").write
+      .mode(SaveMode.Append).saveAsTable("arrayInParquet")
     refreshTable("arrayInParquet")
 
     checkAnswer(
@@ -635,7 +633,7 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
       StructType(
         StructField("a", mapType1, nullable = true) :: Nil)
     assert(df1.schema === expectedSchema1)
-    df1.saveAsTable("mapInParquet", "parquet", SaveMode.Overwrite)
+    df1.write.mode(SaveMode.Overwrite).format("parquet").saveAsTable("mapInParquet")
 
     val df2 =
       createDataFrame(Tuple1(Map(2 -> 3)) :: Nil).toDF("a")
@@ -645,10 +643,10 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
         StructField("a", mapType2, nullable = true) :: Nil)
     assert(df2.schema === expectedSchema2)
     df2.insertInto("mapInParquet", overwrite = false)
-    createDataFrame(Tuple1(Map(4 -> 5)) :: Nil).toDF("a")
-      .saveAsTable("mapInParquet", SaveMode.Append) // This one internally calls df2.insertInto.
-    createDataFrame(Tuple1(Map(6 -> null.asInstanceOf[Integer])) :: Nil).toDF("a")
-      .saveAsTable("mapInParquet", "parquet", SaveMode.Append)
+    createDataFrame(Tuple1(Map(4 -> 5)) :: Nil).toDF("a").write.mode(SaveMode.Append)
+      .saveAsTable("mapInParquet") // This one internally calls df2.insertInto.
+    createDataFrame(Tuple1(Map(6 -> null.asInstanceOf[Integer])) :: Nil).toDF("a").write
+      .format("parquet").mode(SaveMode.Append).saveAsTable("mapInParquet")
     refreshTable("mapInParquet")
 
     checkAnswer(
@@ -682,34 +680,60 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
     assert(schema === actualSchema)
   }
 
+  test("SPARK-6655 still support a schema stored in spark.sql.sources.schema") {
+    val tableName = "spark6655"
+    val schema = StructType(StructField("int", IntegerType, true) :: Nil)
+
+    val hiveTable = HiveTable(
+      specifiedDatabase = Some("default"),
+      name = tableName,
+      schema = Seq.empty,
+      partitionColumns = Seq.empty,
+      properties = Map(
+        "spark.sql.sources.provider" -> "json",
+        "spark.sql.sources.schema" -> schema.json,
+        "EXTERNAL" -> "FALSE"),
+      tableType = ManagedTable,
+      serdeProperties = Map(
+        "path" -> catalog.hiveDefaultTableFilePath(tableName)))
+
+    catalog.client.createTable(hiveTable)
+
+    invalidateTable(tableName)
+    val actualSchema = table(tableName).schema
+    assert(schema === actualSchema)
+    sql(s"drop table $tableName")
+  }
+
+
   test("insert into a table") {
     def createDF(from: Int, to: Int): DataFrame =
       createDataFrame((from to to).map(i => Tuple2(i, s"str$i"))).toDF("c1", "c2")
 
-    createDF(0, 9).saveAsTable("insertParquet", "parquet")
+    createDF(0, 9).write.format("parquet").saveAsTable("insertParquet")
     checkAnswer(
       sql("SELECT p.c1, p.c2 FROM insertParquet p WHERE p.c1 > 5"),
       (6 to 9).map(i => Row(i, s"str$i")))
 
     intercept[AnalysisException] {
-      createDF(10, 19).saveAsTable("insertParquet", "parquet")
+      createDF(10, 19).write.format("parquet").saveAsTable("insertParquet")
     }
 
-    createDF(10, 19).saveAsTable("insertParquet", "parquet", SaveMode.Append)
+    createDF(10, 19).write.mode(SaveMode.Append).format("parquet").saveAsTable("insertParquet")
     checkAnswer(
       sql("SELECT p.c1, p.c2 FROM insertParquet p WHERE p.c1 > 5"),
       (6 to 19).map(i => Row(i, s"str$i")))
 
-    createDF(20, 29).saveAsTable("insertParquet", "parquet", SaveMode.Append)
+    createDF(20, 29).write.mode(SaveMode.Append).format("parquet").saveAsTable("insertParquet")
     checkAnswer(
       sql("SELECT p.c1, c2 FROM insertParquet p WHERE p.c1 > 5 AND p.c1 < 25"),
       (6 to 24).map(i => Row(i, s"str$i")))
 
     intercept[AnalysisException] {
-      createDF(30, 39).saveAsTable("insertParquet")
+      createDF(30, 39).write.saveAsTable("insertParquet")
     }
 
-    createDF(30, 39).saveAsTable("insertParquet", SaveMode.Append)
+    createDF(30, 39).write.mode(SaveMode.Append).saveAsTable("insertParquet")
     checkAnswer(
       sql("SELECT p.c1, c2 FROM insertParquet p WHERE p.c1 > 5 AND p.c1 < 35"),
       (6 to 34).map(i => Row(i, s"str$i")))
@@ -719,11 +743,11 @@ class MetastoreDataSourcesSuite extends QueryTest with BeforeAndAfterEach {
       sql("SELECT p.c1, c2 FROM insertParquet p WHERE p.c1 > 5 AND p.c1 < 45"),
       (6 to 44).map(i => Row(i, s"str$i")))
 
-    createDF(50, 59).saveAsTable("insertParquet", SaveMode.Overwrite)
+    createDF(50, 59).write.mode(SaveMode.Overwrite).saveAsTable("insertParquet")
     checkAnswer(
       sql("SELECT p.c1, c2 FROM insertParquet p WHERE p.c1 > 51 AND p.c1 < 55"),
       (52 to 54).map(i => Row(i, s"str$i")))
-    createDF(60, 69).saveAsTable("insertParquet", SaveMode.Ignore)
+    createDF(60, 69).write.mode(SaveMode.Ignore).saveAsTable("insertParquet")
     checkAnswer(
       sql("SELECT p.c1, c2 FROM insertParquet p"),
       (50 to 59).map(i => Row(i, s"str$i")))
