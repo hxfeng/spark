@@ -152,6 +152,7 @@ object FunctionRegistry {
     // string functions
     expression[Ascii]("ascii"),
     expression[Base64]("base64"),
+    expression[Concat]("concat"),
     expression[Encode]("encode"),
     expression[Decode]("decode"),
     expression[FormatNumber]("format_number"),
@@ -180,7 +181,19 @@ object FunctionRegistry {
 
     // datetime functions
     expression[CurrentDate]("current_date"),
-    expression[CurrentTimestamp]("current_timestamp")
+    expression[CurrentTimestamp]("current_timestamp"),
+    expression[DateFormatClass]("date_format"),
+    expression[DayOfMonth]("day"),
+    expression[DayOfYear]("dayofyear"),
+    expression[DayOfMonth]("dayofmonth"),
+    expression[Hour]("hour"),
+    expression[Month]("month"),
+    expression[Minute]("minute"),
+    expression[Quarter]("quarter"),
+    expression[Second]("second"),
+    expression[WeekOfYear]("weekofyear"),
+    expression[Year]("year")
+
   )
 
   val builtin: FunctionRegistry = {
