@@ -17,7 +17,7 @@
 
 package org.apache.spark.mllib.clustering
 
-import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, normalize, sum}
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV, argtopk, normalize, sum}
 import breeze.numerics.{exp, lgamma}
 import org.apache.hadoop.fs.Path
 import org.json4s.DefaultFormats
@@ -186,7 +186,6 @@ abstract class LDAModel private[clustering] extends Saveable {
  * This model stores only the inferred topics.
  * It may be used for computing topics for new documents, but it may give less accurate answers
  * than the [[DistributedLDAModel]].
- *
  * @param topics Inferred topics (vocabSize x k matrix).
  */
 @Experimental
@@ -218,25 +217,28 @@ class LocalLDAModel private[clustering] (
     LocalLDAModel.SaveLoadV1_0.save(sc, path, topicsMatrix, docConcentration, topicConcentration,
       gammaShape)
   }
-  // TODO
-  // override def logLikelihood(documents: RDD[(Long, Vector)]): Double = ???
 
-  // TODO:
-  // override def topicDistributions(documents: RDD[(Long, Vector)]): RDD[(Long, Vector)] = ???
+  // TODO: declare in LDAModel and override once implemented in DistributedLDAModel
+  /**
+   * Calculates a lower bound on the log likelihood of the entire corpus.
+   * @param documents test corpus to use for calculating log likelihood
+   * @return variational lower bound on the log likelihood of the entire corpus
+   */
+  def logLikelihood(documents: RDD[(Long, Vector)]): Double = bound(documents,
+    docConcentration, topicConcentration, topicsMatrix.toBreeze.toDenseMatrix, gammaShape, k,
+    vocabSize)
 
   /**
-   * Calculate the log variational bound on perplexity. See Equation (16) in original Online
+   * Calculate an upper bound bound on perplexity. See Equation (16) in original Online
    * LDA paper.
    * @param documents test corpus to use for calculating perplexity
-   * @return the log perplexity per word
+   * @return variational upper bound on log perplexity per word
    */
   def logPerplexity(documents: RDD[(Long, Vector)]): Double = {
     val corpusWords = documents
       .map { case (_, termCounts) => termCounts.toArray.sum }
       .sum()
-    val batchVariationalBound = bound(documents, docConcentration,
-      topicConcentration, topicsMatrix.toBreeze.toDenseMatrix, gammaShape, k, vocabSize)
-    val perWordBound = batchVariationalBound / corpusWords
+    val perWordBound = -logLikelihood(documents) / corpusWords
 
     perWordBound
   }
@@ -269,7 +271,7 @@ class LocalLDAModel private[clustering] (
     // by topic (columns of lambda)
     val Elogbeta = LDAUtils.dirichletExpectation(lambda.t).t
 
-    var score = documents.filter(_._2.numActives > 0).map { case (id: Long, termCounts: Vector) =>
+    var score = documents.filter(_._2.numNonzeros > 0).map { case (id: Long, termCounts: Vector) =>
       var docScore = 0.0D
       val (gammad: BDV[Double], _) = OnlineLDAOptimizer.variationalTopicInference(
         termCounts, exp(Elogbeta), brzAlpha, gammaShape, k)
@@ -277,7 +279,7 @@ class LocalLDAModel private[clustering] (
 
       // E[log p(doc | theta, beta)]
       termCounts.foreachActive { case (idx, count) =>
-        docScore += LDAUtils.logSumExp(Elogthetad + Elogbeta(idx, ::).t)
+        docScore += count * LDAUtils.logSumExp(Elogthetad + Elogbeta(idx, ::).t)
       }
       // E[log p(theta | alpha) - log q(theta | gamma)]; assumes alpha is a vector
       docScore += sum((brzAlpha - gammad) :* Elogthetad)
@@ -295,6 +297,40 @@ class LocalLDAModel private[clustering] (
     score += sum(lgamma(sumEta) - lgamma(sum(lambda(::, breeze.linalg.*))))
 
     score
+  }
+
+  /**
+   * Predicts the topic mixture distribution for each document (often called "theta" in the
+   * literature).  Returns a vector of zeros for an empty document.
+   *
+   * This uses a variational approximation following Hoffman et al. (2010), where the approximate
+   * distribution is called "gamma."  Technically, this method returns this approximation "gamma"
+   * for each document.
+   * @param documents documents to predict topic mixture distributions for
+   * @return An RDD of (document ID, topic mixture distribution for document)
+   */
+  // TODO: declare in LDAModel and override once implemented in DistributedLDAModel
+  def topicDistributions(documents: RDD[(Long, Vector)]): RDD[(Long, Vector)] = {
+    // Double transpose because dirichletExpectation normalizes by row and we need to normalize
+    // by topic (columns of lambda)
+    val expElogbeta = exp(LDAUtils.dirichletExpectation(topicsMatrix.toBreeze.toDenseMatrix.t).t)
+    val docConcentrationBrz = this.docConcentration.toBreeze
+    val gammaShape = this.gammaShape
+    val k = this.k
+
+    documents.map { case (id: Long, termCounts: Vector) =>
+      if (termCounts.numNonzeros == 0) {
+         (id, Vectors.zeros(k))
+      } else {
+        val (gamma, _) = OnlineLDAOptimizer.variationalTopicInference(
+          termCounts,
+          expElogbeta,
+          docConcentrationBrz,
+          gammaShape,
+          k)
+        (id, Vectors.dense(normalize(gamma, 1.0).toArray))
+      }
+    }
   }
 
 }
@@ -559,6 +595,23 @@ class DistributedLDAModel private[clustering] (
   /** Java-friendly version of [[topicDistributions]] */
   def javaTopicDistributions: JavaPairRDD[java.lang.Long, Vector] = {
     JavaPairRDD.fromRDD(topicDistributions.asInstanceOf[RDD[(java.lang.Long, Vector)]])
+  }
+
+  /**
+   * For each document, return the top k weighted topics for that document and their weights.
+   * @return RDD of (doc ID, topic indices, topic weights)
+   */
+  def topTopicsPerDocument(k: Int): RDD[(Long, Array[Int], Array[Double])] = {
+    graph.vertices.filter(LDA.isDocumentVertex).map { case (docID, topicCounts) =>
+      val topIndices = argtopk(topicCounts, k)
+      val sumCounts = sum(topicCounts)
+      val weights = if (sumCounts != 0) {
+        topicCounts(topIndices) / sumCounts
+      } else {
+        topicCounts(topIndices)
+      }
+      (docID.toLong, topIndices.toArray, weights.toArray)
+    }
   }
 
   // TODO:
