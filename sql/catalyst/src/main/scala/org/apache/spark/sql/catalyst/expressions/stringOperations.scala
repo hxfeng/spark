@@ -18,6 +18,7 @@
 package org.apache.spark.sql.catalyst.expressions
 
 import java.text.DecimalFormat
+import java.util.Arrays
 import java.util.Locale
 import java.util.regex.{MatchResult, Pattern}
 
@@ -95,7 +96,7 @@ case class ConcatWs(children: Seq[Expression])
     val flatInputs = children.flatMap { child =>
       child.eval(input) match {
         case s: UTF8String => Iterator(s)
-        case arr: ArrayData => arr.toArray().map(_.asInstanceOf[UTF8String])
+        case arr: ArrayData => arr.toArray[UTF8String](StringType)
         case null => Iterator(null.asInstanceOf[UTF8String])
       }
     }
@@ -422,6 +423,31 @@ case class StringInstr(str: Expression, substr: Expression)
 }
 
 /**
+ * Returns the substring from string str before count occurrences of the delimiter delim.
+ * If count is positive, everything the left of the final delimiter (counting from left) is
+ * returned. If count is negative, every to the right of the final delimiter (counting from the
+ * right) is returned. substring_index performs a case-sensitive match when searching for delim.
+ */
+case class SubstringIndex(strExpr: Expression, delimExpr: Expression, countExpr: Expression)
+ extends TernaryExpression with ImplicitCastInputTypes {
+
+  override def dataType: DataType = StringType
+  override def inputTypes: Seq[DataType] = Seq(StringType, StringType, IntegerType)
+  override def children: Seq[Expression] = Seq(strExpr, delimExpr, countExpr)
+  override def prettyName: String = "substring_index"
+
+  override def nullSafeEval(str: Any, delim: Any, count: Any): Any = {
+    str.asInstanceOf[UTF8String].subStringIndex(
+      delim.asInstanceOf[UTF8String],
+      count.asInstanceOf[Int])
+  }
+
+  override def genCode(ctx: CodeGenContext, ev: GeneratedExpressionCode): String = {
+    defineCodeGen(ctx, ev, (str, delim, count) => s"$str.subStringIndex($delim, $count)")
+  }
+}
+
+/**
  * A function that returns the position of the first occurrence of substr
  * in given string after position pos.
  */
@@ -654,6 +680,34 @@ case class StringSplit(str: Expression, pattern: Expression)
   override def prettyName: String = "split"
 }
 
+object Substring {
+  def subStringBinarySQL(bytes: Array[Byte], pos: Int, len: Int): Array[Byte] = {
+    if (pos > bytes.length) {
+      return Array[Byte]()
+    }
+
+    var start = if (pos > 0) {
+      pos - 1
+    } else if (pos < 0) {
+      bytes.length + pos
+    } else {
+      0
+    }
+
+    val end = if ((bytes.length - start) < len) {
+      bytes.length
+    } else {
+      start + len
+    }
+
+    start = Math.max(start, 0)  // underflow
+    if (start < end) {
+      Arrays.copyOfRange(bytes, start, end)
+    } else {
+      Array[Byte]()
+    }
+  }
+}
 /**
  * A function that takes a substring of its first argument starting at a given position.
  * Defined for String and Binary types.
@@ -665,18 +719,31 @@ case class Substring(str: Expression, pos: Expression, len: Expression)
     this(str, pos, Literal(Integer.MAX_VALUE))
   }
 
-  override def dataType: DataType = StringType
+  override def dataType: DataType = str.dataType
 
-  override def inputTypes: Seq[DataType] = Seq(StringType, IntegerType, IntegerType)
+  override def inputTypes: Seq[AbstractDataType] =
+    Seq(TypeCollection(StringType, BinaryType), IntegerType, IntegerType)
 
   override def children: Seq[Expression] = str :: pos :: len :: Nil
 
   override def nullSafeEval(string: Any, pos: Any, len: Any): Any = {
-    string.asInstanceOf[UTF8String].substringSQL(pos.asInstanceOf[Int], len.asInstanceOf[Int])
+    str.dataType match {
+      case StringType => string.asInstanceOf[UTF8String]
+        .substringSQL(pos.asInstanceOf[Int], len.asInstanceOf[Int])
+      case BinaryType => Substring.subStringBinarySQL(string.asInstanceOf[Array[Byte]],
+        pos.asInstanceOf[Int], len.asInstanceOf[Int])
+    }
   }
 
   override def genCode(ctx: CodeGenContext, ev: GeneratedExpressionCode): String = {
-    defineCodeGen(ctx, ev, (str, pos, len) => s"$str.substringSQL($pos, $len)")
+
+    val cls = classOf[Substring].getName
+    defineCodeGen(ctx, ev, (string, pos, len) => {
+      str.dataType match {
+        case StringType => s"$string.substringSQL($pos, $len)"
+        case BinaryType => s"$cls.subStringBinarySQL($string, $pos, $len)"
+      }
+    })
   }
 }
 
@@ -715,6 +782,22 @@ case class Levenshtein(left: Expression, right: Expression) extends BinaryExpres
   override def genCode(ctx: CodeGenContext, ev: GeneratedExpressionCode): String = {
     nullSafeCodeGen(ctx, ev, (left, right) =>
       s"${ev.primitive} = $left.levenshteinDistance($right);")
+  }
+}
+
+/**
+ * A function that return soundex code of the given string expression.
+ */
+case class SoundEx(child: Expression) extends UnaryExpression with ExpectsInputTypes {
+
+  override def dataType: DataType = StringType
+
+  override def inputTypes: Seq[DataType] = Seq(StringType)
+
+  override def nullSafeEval(input: Any): Any = input.asInstanceOf[UTF8String].soundex()
+
+  override def genCode(ctx: CodeGenContext, ev: GeneratedExpressionCode): String = {
+    defineCodeGen(ctx, ev, c => s"$c.soundex()")
   }
 }
 
@@ -1120,4 +1203,3 @@ case class FormatNumber(x: Expression, d: Expression)
 
   override def prettyName: String = "format_number"
 }
-

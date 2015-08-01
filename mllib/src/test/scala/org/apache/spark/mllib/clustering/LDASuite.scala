@@ -122,6 +122,28 @@ class LDASuite extends SparkFunSuite with MLlibTestSparkContext {
     // Check: log probabilities
     assert(model.logLikelihood < 0.0)
     assert(model.logPrior < 0.0)
+
+    // Check: topDocumentsPerTopic
+    // Compare it with top documents per topic derived from topicDistributions
+    val topDocsByTopicDistributions = { n: Int =>
+      Range(0, k).map { topic =>
+        val (doc, docWeights) = topicDistributions.sortBy(-_._2(topic)).take(n).unzip
+        (doc.toArray, docWeights.map(_(topic)).toArray)
+      }.toArray
+    }
+
+    // Top 3 documents per topic
+    model.topDocumentsPerTopic(3).zip(topDocsByTopicDistributions(3)).foreach {case (t1, t2) =>
+      assert(t1._1 === t2._1)
+      assert(t1._2 === t2._2)
+    }
+
+    // All documents per topic
+    val q = tinyCorpus.length
+    model.topDocumentsPerTopic(q).zip(topDocsByTopicDistributions(q)).foreach {case (t1, t2) =>
+      assert(t1._1 === t2._1)
+      assert(t1._2 === t2._2)
+    }
   }
 
   test("vertex indexing") {
@@ -376,6 +398,40 @@ class LDASuite extends SparkFunSuite with MLlibTestSparkContext {
     topics.foreach { topic =>
       assert(topic.forall { case (_, p) => p ~= 0.167 absTol 0.05 })
     }
+  }
+
+  test("OnlineLDAOptimizer alpha hyperparameter optimization") {
+    val k = 2
+    val docs = sc.parallelize(toyData)
+    val op = new OnlineLDAOptimizer().setMiniBatchFraction(1).setTau0(1024).setKappa(0.51)
+      .setGammaShape(100).setOptimzeAlpha(true).setSampleWithReplacement(false)
+    val lda = new LDA().setK(k)
+      .setDocConcentration(1D / k)
+      .setTopicConcentration(0.01)
+      .setMaxIterations(100)
+      .setOptimizer(op)
+      .setSeed(12345)
+    val ldaModel: LocalLDAModel = lda.run(docs).asInstanceOf[LocalLDAModel]
+
+    /* Verify the results with gensim:
+      import numpy as np
+      from gensim import models
+      corpus = [
+       [(0, 1.0), (1, 1.0)],
+       [(1, 1.0), (2, 1.0)],
+       [(0, 1.0), (2, 1.0)],
+       [(3, 1.0), (4, 1.0)],
+       [(3, 1.0), (5, 1.0)],
+       [(4, 1.0), (5, 1.0)]]
+      np.random.seed(2345)
+      lda = models.ldamodel.LdaModel(
+         corpus=corpus, alpha='auto', eta=0.01, num_topics=2, update_every=0, passes=100,
+         decay=0.51, offset=1024)
+      print(lda.alpha)
+      > [ 0.42582646  0.43511073]
+     */
+
+    assert(ldaModel.docConcentration ~== Vectors.dense(0.42582646, 0.43511073) absTol 0.05)
   }
 
   test("model save/load") {
