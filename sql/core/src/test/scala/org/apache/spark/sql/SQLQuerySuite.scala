@@ -17,14 +17,14 @@
 
 package org.apache.spark.sql
 
-import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
-import org.scalatest.BeforeAndAfterAll
-
 import java.sql.Timestamp
 
+import org.scalatest.BeforeAndAfterAll
+
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
 import org.apache.spark.sql.catalyst.DefaultParserDialect
 import org.apache.spark.sql.catalyst.errors.DialectException
-import org.apache.spark.sql.execution.aggregate.Aggregate2Sort
+import org.apache.spark.sql.execution.aggregate
 import org.apache.spark.sql.execution.GeneratedAggregate
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.TestData._
@@ -273,7 +273,7 @@ class SQLQuerySuite extends QueryTest with BeforeAndAfterAll with SQLTestUtils {
       var hasGeneratedAgg = false
       df.queryExecution.executedPlan.foreach {
         case generatedAgg: GeneratedAggregate => hasGeneratedAgg = true
-        case newAggregate: Aggregate2Sort => hasGeneratedAgg = true
+        case newAggregate: aggregate.Aggregate => hasGeneratedAgg = true
         case _ =>
       }
       if (!hasGeneratedAgg) {
@@ -1603,5 +1603,15 @@ class SQLQuerySuite extends QueryTest with BeforeAndAfterAll with SQLTestUtils {
     // unary minus
     checkAnswer(df.select(-df("i")),
       Row(new CalendarInterval(-(12 * 3 - 3), -(7L * MICROS_PER_WEEK + 123))))
+  }
+
+  test("SPARK-9511: error with table starting with number") {
+    val df = sqlContext.sparkContext.parallelize(1 to 10).map(i => (i, i.toString))
+      .toDF("num", "str")
+    df.registerTempTable("1one")
+
+    checkAnswer(sqlContext.sql("select count(num) from 1one"), Row(10))
+
+    sqlContext.dropTempTable("1one")
   }
 }
