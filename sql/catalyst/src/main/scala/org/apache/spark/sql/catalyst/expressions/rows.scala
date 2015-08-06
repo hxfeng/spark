@@ -39,6 +39,13 @@ abstract class MutableRow extends InternalRow {
   def setLong(i: Int, value: Long): Unit = { update(i, value) }
   def setFloat(i: Int, value: Float): Unit = { update(i, value) }
   def setDouble(i: Int, value: Double): Unit = { update(i, value) }
+
+  /**
+   * Update the decimal column at `i`.
+   *
+   * Note: In order to support update decimal with precision > 18 in UnsafeRow,
+   * CAN NOT call setNullAt() for decimal column on UnsafeRow, call setDecimal(i, null, precision).
+   */
   def setDecimal(i: Int, value: Decimal, precision: Int) { update(i, value) }
 }
 
