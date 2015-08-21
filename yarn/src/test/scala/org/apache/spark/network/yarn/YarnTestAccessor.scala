@@ -14,17 +14,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.spark.network.yarn
 
-package org.apache.spark.annotation
-
-import scala.annotation.StaticAnnotation
-import scala.annotation.meta._
+import java.io.File
 
 /**
- * A Scala annotation that specifies the Spark version when a definition was added.
- * Different from the `@since` tag in JavaDoc, this annotation does not require explicit JavaDoc and
- * hence works for overridden methods that inherit API documentation directly from parents.
- * The limitation is that it does not show up in the generated Java API documentation.
+ * just a cheat to get package-visible members in tests
  */
-@param @field @getter @setter @beanGetter @beanSetter
-private[spark] class Since(version: String) extends StaticAnnotation
+object YarnTestAccessor {
+  def getShuffleServicePort: Int = {
+    YarnShuffleService.boundPort
+  }
+
+  def getShuffleServiceInstance: YarnShuffleService = {
+    YarnShuffleService.instance
+  }
+
+  def getRegisteredExecutorFile(service: YarnShuffleService): File = {
+    service.registeredExecutorFile
+  }
+
+}
