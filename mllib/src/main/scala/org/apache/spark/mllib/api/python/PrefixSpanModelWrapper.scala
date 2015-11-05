@@ -15,11 +15,18 @@
  * limitations under the License.
  */
 
-package org.apache.spark.partial
+package org.apache.spark.mllib.api.python
+
+import org.apache.spark.mllib.fpm.PrefixSpanModel
+import org.apache.spark.rdd.RDD
 
 /**
- * A Double value with error bars and associated confidence.
+ * A Wrapper of PrefixSpanModel to provide helper method for Python
  */
-class BoundedDouble(val mean: Double, val confidence: Double, val low: Double, val high: Double) {
-  override def toString(): String = "[%.3f, %.3f]".format(low, high)
+private[python] class PrefixSpanModelWrapper(model: PrefixSpanModel[Any])
+  extends PrefixSpanModel(model.freqSequences) {
+
+  def getFreqSequences: RDD[Array[Any]] = {
+    SerDe.fromTuple2RDD(model.freqSequences.map(x => (x.javaSequence, x.freq)))
+  }
 }
